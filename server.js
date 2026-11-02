@@ -92,7 +92,7 @@ setInterval(() => {
   }
   if (dirty) broadcastLobby();
 }, 1000);
-setInterval(() => { for (const c of clients) { try { c.res.write(": ping\n\n"); } catch (e) {} } }, 20000);
+setInterval(() => { for (const c of clients) send(c.res, "hb", { t: Date.now() }); }, 5000);
 
 /* ---------- http ---------- */
 function readJson(req) {
@@ -127,6 +127,17 @@ const server = http.createServer(async (req, res) => {
     return res.end(INDEX);
   }
   if (req.method === "GET" && p === "/api/hello") return json(res, 200, { ok: true });
+  // backup for phones/networks where the live stream gets blocked or buffered
+  if (req.method === "GET" && p === "/api/lobby") {
+    const pid = url.searchParams.get("pid"); const pl = pid && players.get(pid);
+    if (pl) pl.lastSeen = Date.now();
+    return json(res, 200, { ...lobbyData(), you: pid ? players.has(pid) : null });
+  }
+  if (req.method === "GET" && p === "/api/live") {
+    const pid = url.searchParams.get("pid"); const pl = pid && players.get(pid);
+    if (pl) pl.lastSeen = Date.now();
+    return json(res, 200, { s: lastLive });
+  }
 
   if (req.method === "GET" && p === "/api/events") {
     if (clients.size > 800) { res.writeHead(503); return res.end(); }

@@ -129,6 +129,9 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--orange);outline
 @media (hover:none) and (pointer:coarse){ .touch{display:flex} .keys.desk{display:none} }
 .tiny{font-size:12px;color:var(--chalk-dim);text-align:center;margin:0}
 .touch-hint{display:none}
+.chip.mode{border-color:transparent;background:var(--ink)}
+.chip.mode.on{color:var(--good)}
+.chip.mode.off{color:var(--chalk-dim)}
 .livehead{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .livedot{font:800 12px var(--cond);letter-spacing:.14em;background:var(--bad);color:#fff;border-radius:999px;padding:2px 10px}
 .liveScore{display:flex;align-items:center;justify-content:space-between;gap:10px;font:800 15px var(--cond);letter-spacing:.06em;text-transform:uppercase;min-width:0}
@@ -189,6 +192,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--orange);outline
           <span class="chip">First to <b>3</b></span>
           <span class="chip">Inside the arc <b>1 pt</b></span>
           <span class="chip">Outside the arc <b>2 pts</b></span>
+          <span class="chip mode" id="modeChip">Connecting…</span>
         </div>
       </div>
       <div class="lobby-grid" id="localGrid">
@@ -442,6 +446,7 @@ function miniAvatar(L, w = 68, h = 74, scale = 1.05){
 }
 function openLobby(){
   $("#localGrid").hidden = MODE === "online"; $("#onlineGrid").hidden = MODE !== "online";
+  if (MODE !== "online"){ const mc = $("#modeChip"); mc.className = "chip mode off"; mc.textContent = "This device only"; }
   if (MODE === "online"){ renderOnlineLobby(); show("lobby"); return; }
   const nb = $("#nextBox"); nb.innerHTML = "";
   const first = byId(line[0]);
@@ -682,11 +687,11 @@ function actionUp(){
   G.charging = false;
   if (G.phase !== "live" || G.ball.owner !== "me" || G.ball.state !== "held") return;
   const q = meter(G.chargeT);
-  const timing = (q >= 0.8 && q <= 0.95) ? "perfect" : (q >= 0.58 ? "good" : "bad");
+  const timing = (q >= 0.78 && q <= 0.96) ? "perfect" : (q >= 0.58 ? "good" : "bad");
   say(G.me, timing === "perfect" ? "PERFECT RELEASE" : timing === "good" ? "OKAY RELEASE" : "BAD TIMING", timing === "perfect");
   shoot("me", timing);
 }
-const meter = t => 1 - Math.abs(((t / 0.95) % 2) - 1);
+const meter = t => 1 - Math.abs(((t / 0.5) % 2) - 1);
 function juke(){
   if (!G || G.phase !== "live") return;
   const me = G.me;
@@ -721,7 +726,7 @@ function shoot(who, timing){
   let p = base * tm * con; if (who === "pro") p *= 0.88;
   p = clamp(p, 0.03, 0.97);
   G.ball = {state: "air", owner: null, fx: s.x + s.face*10, fy: s.y, x: s.x, y: s.y, z: 30, t: 0, dur: 0.55 + d/800,
-            make: Math.random() < p, pts, shooter: who, peak: 60 + d*0.32};
+            make: (who === "me" && timing === "perfect") || Math.random() < p, pts, shooter: who, peak: 60 + d*0.32};
   s.hold = 0; s.shootPose = 0.35;
 }
 function resolveShot(){
@@ -991,7 +996,7 @@ function render(c, G, sc){
     const q = meter(G.chargeT), x = me.x - 34, y = me.y - 80, h = 60, w = 10;
     c.fillStyle = "rgba(20,26,23,.85)"; rr(c, x-3, y-3, w+6, h+6, 4); c.fill();
     c.fillStyle = "#3a4640"; c.fillRect(x, y, w, h);
-    c.fillStyle = "#5fd383"; c.fillRect(x, y + h*(1-0.95), w, h*(0.95-0.8));
+    c.fillStyle = "#5fd383"; c.fillRect(x, y + h*(1-0.96), w, h*(0.96-0.78));
     c.fillStyle = "#f3efe4"; c.fillRect(x - 3, y + h*(1-q) - 1.5, w + 6, 3);
   }
   // check text
@@ -1000,7 +1005,26 @@ function render(c, G, sc){
 
 /* ---------- online: one shared line on the server ---------- */
 let MODE = "local";
-const ON = {me: store.get("btp.me", null), lobby: null, cur: null, prev: null, es: null, offerAt: 0, acc: 0, busy: false, vibed: null, rejoining: false};
+const ON = {me: store.get("btp.me", null), lobby: null, cur: null, prev: null, es: null, offerAt: 0, acc: 0, busy: false, vibed: null, rejoining: false, sseAt: 0, polling: false, livePolling: false};
+const pidQ = () => ON.me ? "?pid=" + encodeURIComponent(ON.me.id) : "";
+// Backup: ask the server for the line every few seconds (every 2s if the live stream seems blocked).
+let lastPoll = 0;
+setInterval(() => {
+  if (MODE !== "online" || ON.polling) return;
+  const streamDead = performance.now() - ON.sseAt > 8000;
+  if (!streamDead && performance.now() - lastPoll < 5000) return;
+  ON.polling = true; lastPoll = performance.now();
+  fetch("/api/lobby" + pidQ(), {cache: "no-store"}).then(r => r.ok ? r.json() : null).then(d => { if (d) onLobby(d); }).catch(() => {}).finally(() => { ON.polling = false; });
+}, 2000);
+setInterval(() => {
+  if (MODE !== "online" || ON.livePolling || current !== "lobby") return;
+  if (performance.now() - ON.sseAt < 8000 || !(ON.lobby && ON.lobby.current)) return;
+  ON.livePolling = true;
+  fetch("/api/live" + pidQ(), {cache: "no-store"}).then(r => r.ok ? r.json() : null).then(d => {
+    if (!d || !d.s) return; if (ON.cur && ON.cur.s.t === d.s.t) return;
+    ON.prev = ON.cur; ON.cur = {s: d.s, at: performance.now()};
+  }).catch(() => {}).finally(() => { ON.livePolling = false; });
+}, 300);
 function post(path, body){
   return fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
     .then(async r => { let j = {}; try { j = await r.json(); } catch(e){} if (!r.ok){ const e = new Error(j.error || ("Error " + r.status)); e.status = r.status; throw e; } return j; });
@@ -1009,8 +1033,10 @@ function connect(){
   if (ON.es) ON.es.close();
   const es = new EventSource("/api/events" + (ON.me ? "?pid=" + encodeURIComponent(ON.me.id) : ""));
   ON.es = es;
-  es.addEventListener("lobby", e => { let d; try { d = JSON.parse(e.data); } catch(x){ return; } onLobby(d); });
+  es.addEventListener("hb", () => { ON.sseAt = performance.now(); });
+  es.addEventListener("lobby", e => { ON.sseAt = performance.now(); let d; try { d = JSON.parse(e.data); } catch(x){ return; } onLobby(d); });
   es.addEventListener("live", e => {
+    ON.sseAt = performance.now();
     let d = null; try { d = JSON.parse(e.data); } catch(x){}
     if (!d){ ON.cur = ON.prev = null; return; }
     ON.prev = ON.cur; ON.cur = {s: d, at: performance.now()};
@@ -1036,6 +1062,7 @@ function onLobby(d){
 }
 function renderOnlineLobby(){
   const d = ON.lobby;
+  const mc = $("#modeChip"); mc.className = "chip mode on"; mc.textContent = "● Shared line";
   const c = d && d.current;
   $("#liveWrap").hidden = !c; $("#liveDot").hidden = !c; $("#courtFree").hidden = !!c;
   if (c){ $("#liveName").textContent = c.name; $("#liveSc").textContent = c.sc[0] + " – " + c.sc[1]; }
