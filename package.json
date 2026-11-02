@@ -1,0 +1,13 @@
+{
+  "name": "beat-the-professor",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Beat The Professor - 1v1 basketball game with a shared waiting line",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

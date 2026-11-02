@@ -129,6 +129,15 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--orange);outline
 @media (hover:none) and (pointer:coarse){ .touch{display:flex} .keys.desk{display:none} }
 .tiny{font-size:12px;color:var(--chalk-dim);text-align:center;margin:0}
 .touch-hint{display:none}
+.livehead{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.livedot{font:800 12px var(--cond);letter-spacing:.14em;background:var(--bad);color:#fff;border-radius:999px;padding:2px 10px}
+.liveScore{display:flex;align-items:center;justify-content:space-between;gap:10px;font:800 15px var(--cond);letter-spacing:.06em;text-transform:uppercase;min-width:0}
+.liveScore span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+.liveScore span:last-child{text-align:right}
+.liveScore b{font:400 26px var(--display);color:var(--orange);font-weight:400;flex:none;font-variant-numeric:tabular-nums}
+.spec{display:block;width:100%;max-width:min(100%,calc(50vh * 600 / 700));aspect-ratio:600/700;height:auto;margin:0 auto;border-radius:10px}
+.you{color:var(--orange);font-weight:700;margin-left:6px;font-size:13px}
+.btnrow{display:flex;gap:10px;flex-wrap:wrap}
 @media (hover:none) and (pointer:coarse){.touch-hint{display:block}}
 </style>
 </head>
@@ -182,7 +191,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--orange);outline
           <span class="chip">Outside the arc <b>2 pts</b></span>
         </div>
       </div>
-      <div class="lobby-grid">
+      <div class="lobby-grid" id="localGrid">
         <div class="panel">
           <h2>Next on court</h2>
           <div class="next" id="nextBox"></div>
@@ -191,6 +200,22 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--orange);outline
           <h2>Waiting in line</h2>
           <ol class="list" id="lineList"></ol>
           <button class="btn ghost small" id="addBtn">+ New player</button>
+        </div>
+      </div>
+      <div class="lobby-grid" id="onlineGrid" hidden>
+        <div class="panel">
+          <div class="livehead"><h2>On court now</h2><span class="livedot" id="liveDot" hidden>LIVE</span></div>
+          <div id="liveWrap" hidden>
+            <div class="liveScore"><span id="liveName"></span><b id="liveSc">0 – 0</b><span>The Professor</span></div>
+            <canvas id="spec" class="spec" aria-label="Live match you can watch"></canvas>
+          </div>
+          <p class="empty" id="courtFree">The court is free.</p>
+        </div>
+        <div class="panel">
+          <h2>You</h2>
+          <div class="next" id="youBox"></div>
+          <h2>Waiting in line</h2>
+          <ol class="list" id="onLineList"></ol>
         </div>
       </div>
       <div class="panel">
@@ -384,7 +409,7 @@ function openSetup(){
   $("#uname").value = ""; $("#jnum").value = "23"; $("#uerr").textContent = "";
   swatches($("#o-skin"), SKINS, "skin"); hairOpts(); swatches($("#o-hairc"), HAIRC, "hairc");
   swatches($("#o-jersey"), JERSEYS, "jersey"); swatches($("#o-band"), BANDS, "band");
-  $("#cancelSetup").hidden = roster.length === 0;
+  $("#cancelSetup").hidden = MODE === "online" || roster.length === 0;
   show("setup"); drawPreview();
 }
 $("#uname").addEventListener("input", () => { $("#uerr").textContent = ""; drawPreview(); });
@@ -394,6 +419,14 @@ $("#joinBtn").addEventListener("click", () => {
   const n = $("#uname").value.trim().replace(/\s+/g," ");
   const err = nameError(n);
   if (err){ $("#uerr").textContent = err; $("#uname").focus(); return; }
+  if (MODE === "online"){
+    const jb = $("#joinBtn"); jb.disabled = true; jb.textContent = "Joining…";
+    post("/api/join", {name: n, look: {...look}, oldId: ON.me && ON.me.id, oldToken: ON.me && ON.me.token})
+      .then(r => { ON.me = r; store.set("btp.me", r); connect(); openLobby(); })
+      .catch(e => { $("#uerr").textContent = e.status === 400 ? e.message : "Couldn't reach the game. Check your internet and try again."; })
+      .finally(() => { jb.disabled = false; jb.textContent = "Join the line"; });
+    return;
+  }
   const p = {id: "p" + Date.now().toString(36) + Math.random().toString(36).slice(2,6), name: n, look: {...look}};
   roster.push(p); line.push(p.id);
   roster = roster.filter(r => line.includes(r.id) || r.id === p.id).slice(-60);
@@ -408,6 +441,8 @@ function miniAvatar(L, w = 68, h = 74, scale = 1.05){
   return cv;
 }
 function openLobby(){
+  $("#localGrid").hidden = MODE === "online"; $("#onlineGrid").hidden = MODE !== "online";
+  if (MODE === "online"){ renderOnlineLobby(); show("lobby"); return; }
   const nb = $("#nextBox"); nb.innerHTML = "";
   const first = byId(line[0]);
   if (first){
@@ -436,6 +471,10 @@ function openLobby(){
     x.addEventListener("click", () => { line = line.filter(v => v !== id); save(); openLobby(); });
     li.append(pos, miniAvatar(p.look), nm, x); ll.appendChild(li);
   });
+  renderHonour(honour);
+  show("lobby");
+}
+function renderHonour(honour){
   const hl = $("#honourList"); hl.innerHTML = "";
   if (!honour.length){ const li = document.createElement("li"); li.innerHTML = '<span class="empty">No one has beaten The Professor yet. Be the first!</span>'; hl.appendChild(li); }
   honour.slice(0, 10).forEach((h, i) => {
@@ -445,7 +484,6 @@ function openLobby(){
     const sm = document.createElement("small"); sm.textContent = h.score; nm.appendChild(sm);
     li.append(pos, miniAvatar(h.look), nm); hl.appendChild(li);
   });
-  show("lobby");
 }
 $("#addBtn").addEventListener("click", openSetup);
 
@@ -542,9 +580,13 @@ function mkP(x, y, L, name, ai){
 }
 function startMatch(id){
   const p = byId(id); if (!p) return;
-  matchPlayer = p;
   line = line.filter(v => v !== id); save();
+  beginGame(p, false);
+}
+function beginGame(p, online){
+  matchPlayer = p;
   G = {
+    online,
     t: 0, phase: "countdown", phaseT: 3,
     score: {me: 0, pro: 0},
     me: mkP(300, 540, p.look, p.name, false),
@@ -557,7 +599,10 @@ function startMatch(id){
   $("#hudMeName").textContent = p.name;
   const hm = $("#hudMe").getContext("2d"); hm.clearRect(0,0,68,74); drawChar(hm, 34, 70, p.look, {scale: 1.0});
   const hp = $("#hudPro").getContext("2d"); hp.clearRect(0,0,68,74); drawChar(hp, 34, 70, PRO_LOOK, {scale: 1.0, face: -1});
-  const nx = byId(line[0]); $("#hudNext").textContent = nx ? "Next: " + nx.name : "";
+  let nxName = "";
+  if (online){ const q = (ON.lobby && ON.lobby.queue || []).filter(x => x.id !== p.id); if (q[0]) nxName = q[0].name; }
+  else { const nx = byId(line[0]); if (nx) nxName = nx.name; }
+  $("#hudNext").textContent = nxName ? "Next: " + nxName : "";
   updateScore();
   $("#endOv").hidden = true; $("#countOv").hidden = false; $("#countNum").textContent = "3";
   show("game");
@@ -706,22 +751,32 @@ function endGame(winner){
   G.phase = "over"; G.charging = false;
   const won = winner === "me";
   const sc = `${G.score.me} – ${G.score.pro}`;
-  if (won){ honour.unshift({name: matchPlayer.name, look: matchPlayer.look, score: sc}); honour = honour.slice(0, 30); save(); }
+  if (G.online){ post("/api/end", {id: ON.me.id, token: ON.me.token, won, score: [G.score.me, G.score.pro]}).catch(() => {}); }
+  else if (won){ honour.unshift({name: matchPlayer.name, look: matchPlayer.look, score: sc}); honour = honour.slice(0, 30); save(); }
+  const wasOnline = G.online;
   setTimeout(() => {
     $("#endTitle").textContent = won ? "You beat The Professor!" : "Class dismissed";
     $("#endScore").textContent = sc;
     const qs = won ? QUOTES_WIN : QUOTES_LOSE;
     $("#endQuote").textContent = "“" + qs[Math.floor(Math.random()*qs.length)] + "” – The Professor";
     $("#stMoves").textContent = G.stats.moves; $("#stAnkles").textContent = G.stats.ankles; $("#stSteals").textContent = G.stats.steals;
-    const nx = byId(line[0]);
+    const nx = wasOnline ? null : byId(line[0]);
     const nb = $("#nextMatchBtn"); nb.hidden = !nx; if (nx) nb.textContent = "Next up: " + nx.name;
+    $("#againBtn").textContent = wasOnline ? "Join the line again" : "Play again (back of the line)";
+    $("#lobbyBtn").textContent = wasOnline ? "Back to the lobby" : "Back to the line";
     $("#endOv").hidden = false;
     const first = $("#endOv").querySelector(".btn:not([hidden])"); if (first) first.focus();
   }, 900);
 }
-function quitMatch(){ G = null; openLobby(); }
+function quitMatch(){
+  if (G && G.online && G.phase !== "over") post("/api/end", {id: ON.me.id, token: ON.me.token, won: false, score: [G.score.me, G.score.pro]}).catch(() => {});
+  G = null; openLobby();
+}
 $("#nextMatchBtn").addEventListener("click", () => { const id = line[0]; if (id) startMatch(id); else openLobby(); });
-$("#againBtn").addEventListener("click", () => { if (matchPlayer && !line.includes(matchPlayer.id)){ line.push(matchPlayer.id); save(); } G = null; openLobby(); });
+$("#againBtn").addEventListener("click", () => {
+  if (MODE === "online"){ G = null; post("/api/requeue", {id: ON.me.id, token: ON.me.token}).catch(() => {}).finally(openLobby); return; }
+  if (matchPlayer && !line.includes(matchPlayer.id)){ line.push(matchPlayer.id); save(); } G = null; openLobby();
+});
 $("#lobbyBtn").addEventListener("click", () => { G = null; openLobby(); });
 
 /* ---------- AI: The Professor ---------- */
@@ -893,9 +948,8 @@ function pill(c, x, y, text, hot){
   c.fillStyle = hot ? "#f47b20" : "rgba(20,26,23,.85)"; rr(c, x - w/2, y - 10, w, 20, 10); c.fill();
   c.fillStyle = hot ? "#141a17" : "#f3efe4"; c.fillText(text, x, y + 0.5);
 }
-function render(){
-  const c = ctx;
-  c.setTransform(viewScale*dpr, 0, 0, viewScale*dpr, 0, 0);
+function render(c, G, sc){
+  c.setTransform(sc, 0, 0, sc, 0, 0);
   c.drawImage(courtImg, 0, 0, W, H);
   // rim + net (with swish flash)
   c.strokeStyle = "#f47b20"; c.lineWidth = 3.5; c.beginPath(); c.ellipse(HOOP.x, HOOP.y, 14, 9, 0, 0, Math.PI*2); c.stroke();
@@ -944,19 +998,179 @@ function render(){
   if (G.phase === "check"){ pill(c, 300, 600, "CHECK BALL", true); }
 }
 
+/* ---------- online: one shared line on the server ---------- */
+let MODE = "local";
+const ON = {me: store.get("btp.me", null), lobby: null, cur: null, prev: null, es: null, offerAt: 0, acc: 0, busy: false, vibed: null, rejoining: false};
+function post(path, body){
+  return fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
+    .then(async r => { let j = {}; try { j = await r.json(); } catch(e){} if (!r.ok){ const e = new Error(j.error || ("Error " + r.status)); e.status = r.status; throw e; } return j; });
+}
+function connect(){
+  if (ON.es) ON.es.close();
+  const es = new EventSource("/api/events" + (ON.me ? "?pid=" + encodeURIComponent(ON.me.id) : ""));
+  ON.es = es;
+  es.addEventListener("lobby", e => { let d; try { d = JSON.parse(e.data); } catch(x){ return; } onLobby(d); });
+  es.addEventListener("live", e => {
+    let d = null; try { d = JSON.parse(e.data); } catch(x){}
+    if (!d){ ON.cur = ON.prev = null; return; }
+    ON.prev = ON.cur; ON.cur = {s: d, at: performance.now()};
+  });
+}
+function onLobby(d){
+  ON.lobby = d;
+  if (d.offer) ON.offerAt = performance.now() + d.offer.left;
+  if (ON.me && d.you === false && !ON.rejoining){
+    // the server restarted and forgot us: quietly rejoin with the same player
+    ON.rejoining = true;
+    post("/api/join", {name: ON.me.name, look: ON.me.look})
+      .then(r => { ON.me = r; store.set("btp.me", r); connect(); })
+      .catch(() => { ON.me = null; store.set("btp.me", null); if (current === "lobby") openSetup(); })
+      .finally(() => { ON.rejoining = false; });
+    return;
+  }
+  if (!d.current){ ON.cur = ON.prev = null; }
+  const mine = ON.me && d.offer && d.offer.id === ON.me.id;
+  if (mine && ON.vibed !== d.offer.id){ ON.vibed = d.offer.id; try { navigator.vibrate && navigator.vibrate([160, 80, 160]); } catch(e){} }
+  if (!mine) ON.vibed = null;
+  if (current === "lobby") renderOnlineLobby();
+}
+function renderOnlineLobby(){
+  const d = ON.lobby;
+  const c = d && d.current;
+  $("#liveWrap").hidden = !c; $("#liveDot").hidden = !c; $("#courtFree").hidden = !!c;
+  if (c){ $("#liveName").textContent = c.name; $("#liveSc").textContent = c.sc[0] + " – " + c.sc[1]; }
+  const q = d ? d.queue : [];
+  $("#courtFree").textContent = !d ? "Connecting to the court…" : q.length ? "The court is free. Next up: " + q[0].name + "." : "The court is free. Join the line to play!";
+  // you
+  const yb = $("#youBox"); yb.innerHTML = "";
+  const me = ON.me;
+  const who = document.createElement("div"); who.className = "who";
+  if (!me){
+    const b = document.createElement("button"); b.className = "btn"; b.textContent = "Make a player"; b.addEventListener("click", openSetup);
+    who.append(b); yb.append(who);
+  } else {
+    yb.appendChild(miniAvatar(me.look, 220, 242, 2.8));
+    const nm = document.createElement("div"); nm.className = "name"; nm.textContent = me.name;
+    const hint = document.createElement("div"); hint.className = "hint";
+    const row = document.createElement("div"); row.className = "btnrow";
+    const idx = q.findIndex(x => x.id === me.id);
+    const offered = d && d.offer && d.offer.id === me.id;
+    const playing = c && c.id === me.id;
+    if (offered){
+      hint.textContent = "It's your turn! Everyone can watch your match.";
+      const b = document.createElement("button"); b.className = "btn"; b.id = "startBtn"; b.textContent = "Start match";
+      b.addEventListener("click", startOnline); row.append(b);
+    } else if (playing){
+      hint.textContent = "You're on court.";
+    } else if (idx >= 0){
+      hint.textContent = idx === 0 ? "You're next! Get ready." : `You're #${idx + 1} in line. ${idx} ${idx === 1 ? "person is" : "people are"} ahead of you.`;
+    } else if (d){
+      hint.textContent = "You're not in line.";
+      const b = document.createElement("button"); b.className = "btn"; b.textContent = "Join the line";
+      b.addEventListener("click", () => { b.disabled = true; post("/api/requeue", {id: me.id, token: me.token}).catch(() => {}); });
+      row.append(b);
+    }
+    const ch = document.createElement("button"); ch.className = "btn ghost small"; ch.textContent = "Change player";
+    ch.addEventListener("click", () => {
+      const old = ON.me; ON.me = null; store.set("btp.me", null);
+      post("/api/leave", {id: old.id, token: old.token}).catch(() => {}).finally(() => { connect(); openSetup(); });
+    });
+    row.append(ch);
+    who.append(nm, hint, row); yb.append(who);
+    tickStart();
+  }
+  // line
+  const ll = $("#onLineList"); ll.innerHTML = "";
+  if (!q.length){ const li = document.createElement("li"); li.innerHTML = '<span class="empty">No one is waiting.</span>'; ll.appendChild(li); }
+  q.slice(0, 50).forEach((p, i) => {
+    const li = document.createElement("li");
+    const pos = document.createElement("span"); pos.className = "pos"; pos.textContent = String(i + 1);
+    const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = p.name;
+    if (me && p.id === me.id){ const y = document.createElement("span"); y.className = "you"; y.textContent = "YOU"; nm.appendChild(y); }
+    li.append(pos, miniAvatar(p.look), nm); ll.appendChild(li);
+  });
+  if (q.length > 50){ const li = document.createElement("li"); li.innerHTML = '<span class="empty">+ ' + (q.length - 50) + ' more</span>'; ll.appendChild(li); }
+  renderHonour(d ? d.honour : []);
+}
+function tickStart(){
+  const b = $("#startBtn"); if (!b) return;
+  const s = Math.max(0, Math.ceil((ON.offerAt - performance.now()) / 1000));
+  b.textContent = "Start match (" + s + "s)";
+}
+setInterval(tickStart, 500);
+function startOnline(){
+  const b = $("#startBtn"); if (b) b.disabled = true;
+  post("/api/start", {id: ON.me.id, token: ON.me.token})
+    .then(r => { if (r.ok) beginGame(ON.me, true); else { if (b) b.disabled = false; renderOnlineLobby(); } })
+    .catch(() => { if (b) b.disabled = false; });
+}
+function snap(){
+  const P = p => [Math.round(p.x), Math.round(p.y), p.face, +(p.run || 0).toFixed(1), p.moving ? 1 : 0, (p.fallen || 0) > 0 ? 1 : 0,
+                  p.stun > 0 ? 1 : 0, p.labelT > 0 ? String(p.label).slice(0, 30) : "", p.labelHot ? 1 : 0, (p.shootPose || 0) > 0 ? 1 : 0];
+  const b = G.ball;
+  return {m: P(G.me), p: P(G.pro), b: [Math.round(b.x), Math.round(b.y), Math.round(b.z), b.state === "held" ? (b.owner === "me" ? 1 : 2) : 0],
+          ph: G.phase, ch: G.charging ? +G.chargeT.toFixed(2) : -1, sw: G.swish > 0 ? 1 : 0, cl: G.clear.me ? 1 : 0,
+          sc: [G.score.me, G.score.pro], t: +G.t.toFixed(2)};
+}
+function sendLive(dt){
+  ON.acc += dt;
+  if (ON.acc < 0.125 || ON.busy || G.phase === "over") return;
+  ON.acc = 0; ON.busy = true;
+  fetch("/api/live", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: ON.me.id, token: ON.me.token, s: snap()})})
+    .catch(() => {}).finally(() => { ON.busy = false; });
+}
+function specState(){
+  const d = ON.lobby, cur = ON.cur; if (!d || !d.current || !cur) return null;
+  const s = cur.s, ps = ON.prev ? ON.prev.s : s;
+  const k = ON.prev ? clamp((performance.now() - cur.at) / 115, 0, 1) : 1;
+  const mk = (a, pa, L, name) => ({x: lerp(pa[0], a[0], k), y: lerp(pa[1], a[1], k), face: a[2], run: a[3], moving: !!a[4], fallen: a[5],
+    stun: a[6] ? 1 : 0, labelT: a[7] ? 1 : 0, label: a[7], labelHot: !!a[8], shootPose: a[9], L, name});
+  const bo = s.b[3];
+  return {
+    me: mk(s.m, ps.m, d.current.look, d.current.name), pro: mk(s.p, ps.p, PRO_LOOK, "THE PROFESSOR"),
+    ball: {state: bo ? "held" : "air", owner: bo === 1 ? "me" : bo === 2 ? "pro" : null, x: lerp(ps.b[0], s.b[0], k), y: lerp(ps.b[1], s.b[1], k), z: lerp(ps.b[2], s.b[2], k)},
+    phase: s.ph, charging: s.ch >= 0, chargeT: Math.max(0, s.ch), swish: s.sw ? 1 : 0, clear: {me: !!s.cl}, t: s.t,
+  };
+}
+function drawSpectate(){
+  const sp = $("#spec"); if (!sp || $("#liveWrap").hidden) return;
+  const S = specState(); const w = sp.clientWidth; if (!w) return;
+  const r = Math.min(window.devicePixelRatio || 1, 2);
+  const pw = Math.round(w*r), ph = Math.round(w*H/W*r);
+  if (sp.width !== pw || sp.height !== ph){ sp.width = pw; sp.height = ph; }
+  const c = sp.getContext("2d");
+  if (!S){ c.setTransform(w/W*r, 0, 0, w/W*r, 0, 0); c.drawImage(courtImg, 0, 0, W, H); pill(c, 300, 400, "WAITING FOR THE MATCH…", false); return; }
+  render(c, S, w/W*r);
+}
+
 /* ---------- loop ---------- */
 let last = 0;
 function frame(ts){
   requestAnimationFrame(frame);
   const dt = Math.min(0.05, last ? (ts - last)/1000 : 0); last = ts;
-  if (current === "game" && G){ step(dt); render(); }
+  if (current === "game" && G){
+    step(dt); render(ctx, G, viewScale*dpr);
+    if (G.online) sendLive(dt);
+  }
+  if (current === "lobby" && MODE === "online") drawSpectate();
 }
 requestAnimationFrame(frame);
 
 /* ---------- boot ---------- */
+function localBoot(){ MODE = "local"; if (line.length) openLobby(); else openSetup(); }
 function boot(){
   paintCourt();
-  if (line.length) openLobby(); else openSetup();
+  if (!/^https?:$/.test(location.protocol)) return localBoot();
+  const ac = new AbortController(); const to = setTimeout(() => ac.abort(), 6000);
+  fetch("/api/hello", {cache: "no-store", signal: ac.signal})
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+      clearTimeout(to);
+      if (!(j && j.ok)) return localBoot();
+      MODE = "online"; connect();
+      if (ON.me) openLobby(); else openSetup();
+    })
+    .catch(() => { clearTimeout(to); localBoot(); });
 }
 if (document.fonts && document.fonts.ready) {
   let done = false; const go = () => { if (!done){ done = true; boot(); } };
